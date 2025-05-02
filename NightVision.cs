@@ -1,5 +1,4 @@
-﻿
-using Facepunch;
+﻿using Facepunch;
 using Network;
 using Newtonsoft.Json;
 using Oxide.Core;
@@ -15,13 +14,14 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Jake_Rich", "1.3.1")]
+    [Info("NightVision", "Jake_Rich", "1.4.0")]
     [Description("See at night")]
 
     //1.1.0: Made more performance friendly
     //1.2.0: Removed CanNetworkTo (performance)
     //1.3.0: Added Plugin API
     //1.3.1: ArrayPool.Free
+    //1.4.0: Added IsPlayerTimeLocked and BlockEnvUpdates to Plugin API
 
     public class NightVision : RustPlugin
     {
@@ -32,6 +32,8 @@ namespace Oxide.Plugins
         public UILabel label { get; set; }
 
         public static MethodInfo SendAsSnapshotMethod;
+		
+        public bool API_envUpdates = true;
 
         private void TimerLoop()
         {
@@ -86,7 +88,7 @@ namespace Oxide.Plugins
                 }
                 #endregion
             }
-            else
+            else if (API_envUpdates)
             {
                 //Send the EnvSync to the client directly (limitNetworking enabled)
                 if (SendAsSnapshotMethod == null)
@@ -233,6 +235,19 @@ namespace Oxide.Plugins
         {
             var data = GetPlayerData(player);
             data.LockTime = false;
+        }
+		
+        [HookMethod("IsPlayerTimeLocked")]
+        bool IsPlayerTimeLocked_PluginAPI(BasePlayer player)
+        {
+            var data = GetPlayerData(player);
+            return data.LockTime;
+        }
+		
+        [HookMethod("BlockEnvUpdates")]
+        void BlockEnvUpdates_PluginAPI(bool envUpdates)
+        {
+            API_envUpdates = !envUpdates;
         }
 
         #endregion
