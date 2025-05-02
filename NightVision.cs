@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -9,7 +9,7 @@ using Oxide.Core;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Clearshot", "2.4.0")]
+    [Info("NightVision", "Clearshot", "2.4.1")]
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
@@ -60,16 +60,17 @@ namespace Oxide.Plugins
 
                             if (API_blockEnvUpdates && !nvPlayerData.timeLocked) continue;
 
-                            if (Net.sv.write.Start())
+                            if (connection != null)
                             {
+                                var write = Net.sv.StartWrite();
                                 connection.validate.entityUpdates = connection.validate.entityUpdates + 1;
                                 BaseNetworkable.SaveInfo saveInfo = new global::BaseNetworkable.SaveInfo
                                 {
                                     forConnection = connection,
                                     forDisk = false
                                 };
-                                Net.sv.write.PacketID(Message.Type.Entities);
-                                Net.sv.write.UInt32(connection.validate.entityUpdates);
+                                write.PacketID(Message.Type.Entities);
+                                write.UInt32(connection.validate.entityUpdates);
                                 using (saveInfo.msg = Facepunch.Pool.Get<ProtoBuf.Entity>())
                                 {
                                     _envSync.Save(saveInfo);
@@ -89,9 +90,9 @@ namespace Oxide.Plugins
                                     {
                                         LogError(this + ": ToStream - no baseNetworkable!?");
                                     }
-                                    saveInfo.msg.ToProto(Net.sv.write);
+                                    saveInfo.msg.ToProto(write);
                                     _envSync.PostSave(saveInfo);
-                                    Net.sv.write.Send(new SendInfo(connection));
+                                    write.Send(new SendInfo(connection));
                                 }
                             }
                         }
