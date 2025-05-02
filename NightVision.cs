@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -13,28 +13,28 @@ namespace Oxide.Plugins
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
+        public const string PermAllowed = "nightvision.allowed";
+        public const string PermUnlimitedNvg = "nightvision.unlimitednvg";
+        public const string PermAuto = "nightvision.auto";
+
         private PluginConfig _config;
-        private Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
+        private readonly Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
         private EnvSync _envSync;
-        private Dictionary<ulong, NVPlayerData> _playerData = new Dictionary<ulong, NVPlayerData>();
-        private Dictionary<ulong, float> _playerTimes = new Dictionary<ulong, float>();
+        private readonly Dictionary<ulong, NvPlayerData> _playerData = new();
+        private Dictionary<ulong, float> _playerTimes = new();
         private DateTime _nvDate;
-        private List<ulong> _connected = new List<ulong>();
+        private readonly List<ulong> _connected = new();
 
-        private string PERM_ALLOWED = "nightvision.allowed";
-        private string PERM_UNLIMITEDNVG = "nightvision.unlimitednvg";
-        private string PERM_AUTO = "nightvision.auto";
-
-        private bool API_blockEnvUpdates = false;
+        private bool _apiBlockEnvUpdates;
 
         private void SendChatMsg(BasePlayer pl, string msg, string prefix = null) =>
-            _rustPlayer.Message(pl, msg, prefix != null ? prefix : lang.GetMessage("ChatPrefix", this, pl.UserIDString), Convert.ToUInt64(_config.chatIconID), Array.Empty<object>());
+            _rustPlayer.Message(pl, msg, prefix ?? lang.GetMessage("ChatPrefix", this, pl.UserIDString), Convert.ToUInt64(_config.ChatIconID), Array.Empty<object>());
 
         private void Init()
         {
-            permission.RegisterPermission(PERM_ALLOWED, this);
-            permission.RegisterPermission(PERM_UNLIMITEDNVG, this);
-            permission.RegisterPermission(PERM_AUTO, this);
+            permission.RegisterPermission(PermAllowed, this);
+            permission.RegisterPermission(PermUnlimitedNvg, this);
+            permission.RegisterPermission(PermAuto, this);
 
             _playerTimes = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, float>>($"{Name}\\playerTimes");
         }
@@ -43,77 +43,99 @@ namespace Oxide.Plugins
         {
             _envSync = BaseNetworkable.serverEntities.OfType<EnvSync>().FirstOrDefault();
 
-            timer.Every(5f, () => {
+            timer.Every(5f, () =>
+            {
                 if (!_envSync.limitNetworking)
                     _envSync.limitNetworking = true;
 
                 List<Connection> subscribers = _envSync.net.group.subscribers;
-                if (subscribers != null && subscribers.Count > 0)
+                if (subscribers is { Count: > 0 })
                 {
                     for (int i = 0; i < subscribers.Count; i++)
                     {
                         Connection connection = subscribers[i];
-                        global::BasePlayer basePlayer = connection.player as global::BasePlayer;
+                        BasePlayer basePlayer = connection.player as BasePlayer;
 
-                        if (!(basePlayer == null)) {
-                            NVPlayerData nvPlayerData = GetNVPlayerData(basePlayer);
+                        if (basePlayer == null) continue;
 
-                            if (API_blockEnvUpdates && !nvPlayerData.timeLocked) continue;
+                        NvPlayerData nvPlayerData = GetNvPlayerData(basePlayer);
 
-                            if (connection != null)
+                        if (_apiBlockEnvUpdates && !nvPlayerData.TimeLocked) continue;
+
+                        NetWrite write = Net.sv.StartWrite();
+                        connection.validate.entityUpdates++;
+                        BaseNetworkable.SaveInfo saveInfo = new()
+                        {
+                            forConnection = connection,
+                            forDisk = false
+                        };
+                        write.PacketID(Message.Type.Entities);
+                        write.UInt32(connection.validate.entityUpdates);
+
+                        using (saveInfo.msg = Facepunch.Pool.Get<ProtoBuf.Entity>())
+                        {
+                            _envSync.Save(saveInfo);
+                            if (nvPlayerData.TimeLocked)
                             {
-                                var write = Net.sv.StartWrite();
-                                connection.validate.entityUpdates = connection.validate.entityUpdates + 1;
-                                BaseNetworkable.SaveInfo saveInfo = new global::BaseNetworkable.SaveInfo
+                                saveInfo.msg.environment.dateTime = _nvDate.AddHours(nvPlayerData.Time).ToBinary();
+                                saveInfo.msg.environment.fog = 0;
+                                saveInfo.msg.environment.rain = 0;
+                                saveInfo.msg.environment.clouds = 0;
+                                saveInfo.msg.environment.wind = 0;
+                            }
+                            if (saveInfo.msg.baseEntity == null)
+                            {
+                                LogError(this + ": ToStream - no BaseEntity!?");
+                            }
+                            if (saveInfo.msg.baseNetworkable == null)
+                            {
+                                LogError(this + ": ToStream - no baseNetworkable!?");
+                            }
+
+                            using BufferStream bufferStream = new BufferStream();
+                            bufferStream.Initialize();
+                            try
+                            {
+                                saveInfo.msg.ToProto(bufferStream);
+                                _envSync.PostSave(saveInfo);
+
+                                ArraySegment<byte> segment = bufferStream.GetBuffer();
+                                if (segment.Array == null || segment.Count == 0)
                                 {
-                                    forConnection = connection,
-                                    forDisk = false
-                                };
-                                write.PacketID(Message.Type.Entities);
-                                write.UInt32(connection.validate.entityUpdates);
-                                using (saveInfo.msg = Facepunch.Pool.Get<ProtoBuf.Entity>())
-                                {
-                                    _envSync.Save(saveInfo);
-                                    if (nvPlayerData.timeLocked)
-                                    {
-                                        saveInfo.msg.environment.dateTime = _nvDate.AddHours(nvPlayerData.time).ToBinary();
-                                        saveInfo.msg.environment.fog = 0;
-                                        saveInfo.msg.environment.rain = 0;
-                                        saveInfo.msg.environment.clouds = 0;
-										saveInfo.msg.environment.wind = 0;
-                                    }
-                                    if (saveInfo.msg.baseEntity == null)
-                                    {
-                                        LogError(this + ": ToStream - no BaseEntity!?");
-                                    }
-                                    if (saveInfo.msg.baseNetworkable == null)
-                                    {
-                                        LogError(this + ": ToStream - no baseNetworkable!?");
-                                    }
-                                    saveInfo.msg.ToProto(write);
-                                    _envSync.PostSave(saveInfo);
-                                    write.Send(new SendInfo(connection));
+                                    LogError("BufferStream returned an empty or null segment.");
+                                    continue;
                                 }
+
+                                byte[] buffer = new byte[segment.Count];
+                                Array.Copy(segment.Array, segment.Offset, buffer, 0, segment.Count);
+
+                                write.Write(buffer, 0, buffer.Length);
+                                write.Send(new SendInfo(connection));
+                            }
+                            catch (Exception ex)
+                            {
+                                LogError($"Failed to serialize with BufferStream: {ex.Message}");
                             }
                         }
                     }
                 }
             });
+
         }
 
         private void OnPlayerConnected(BasePlayer player)
         {
-            if (player != null && !_connected.Contains(player.userID))
+            if (player != null && !_connected.Contains(player.userID.Get()))
                 _connected.Add(player.userID);
         }
 
-        private void OnPlayerDisconnected(BasePlayer pl, string reason)
+        private void OnPlayerDisconnected(BasePlayer pl, string _)
         {
-            if (pl != null && _playerData.ContainsKey(pl.userID))
+            if (pl != null)
                 _playerData.Remove(pl.userID);
 
-            if (pl != null && _connected.Contains(pl.userID))
-                _connected.Remove(pl.userID);
+            if (pl != null && _connected.Contains(pl.userID.Get()))
+                _connected.Remove(pl.userID.Get());
         }
 
         private void OnPlayerSleepEnded(BasePlayer pl)
@@ -121,13 +143,13 @@ namespace Oxide.Plugins
             if (pl == null)
                 return;
 
-            if (!_connected.Contains(pl.userID))
+            if (!_connected.Contains(pl.userID.Get()))
                 return;
 
-            if (permission.UserHasPermission(pl.UserIDString, PERM_AUTO))
-                NightVisionCommand(pl.IPlayer, "nv", new string[] { _playerTimes.ContainsKey(pl.userID) ? _playerTimes[pl.userID].ToString() : "" });
+            if (permission.UserHasPermission(pl.UserIDString, PermAuto))
+                NightVisionCommand(pl.IPlayer, "nv", new[] { _playerTimes.TryGetValue(pl.userID, out float time) ? time.ToString() : "" });
 
-            _connected.Remove(pl.userID);
+            _connected.Remove(pl.userID.Get());
         }
 
         private void Unload()
@@ -150,55 +172,53 @@ namespace Oxide.Plugins
 
             if (args.Length != 0 && args[0] == "help")
             {
-                StringBuilder sb = new StringBuilder();
+                StringBuilder sb = new();
                 sb.AppendLine(lang.GetMessage("HelpTitle", this, pl.UserIDString));
                 sb.AppendLine(lang.GetMessage("Help1", this, pl.UserIDString));
 
-                if (permission.UserHasPermission(pl.UserIDString, PERM_UNLIMITEDNVG))
+                if (permission.UserHasPermission(pl.UserIDString, PermUnlimitedNvg))
                     sb.AppendLine(lang.GetMessage("Help2", this, pl.UserIDString));
 
                 SendChatMsg(pl, sb.ToString(), "");
                 return;
             }
 
-            NVPlayerData nvpd;
-            switch(command)
+            switch (command)
             {
                 case "nightvision":
                 case "nv":
-                    if (!permission.UserHasPermission(pl.UserIDString, PERM_ALLOWED))
+                    if (!permission.UserHasPermission(pl.UserIDString, PermAllowed))
                     {
                         SendChatMsg(pl, lang.GetMessage("NoPerms", this, pl.UserIDString));
                         return;
                     }
 
-                    nvpd = GetNVPlayerData(pl);
-                    nvpd.timeLocked = !nvpd.timeLocked;
-                    float time;
-                    nvpd.time = args.Length > 0 && float.TryParse(args[0], out time) && time >= 0 && time <= 24 ? time : _config.time;
+                    NvPlayerData nvpd = GetNvPlayerData(pl);
+                    nvpd.TimeLocked = !nvpd.TimeLocked;
+                    nvpd.Time = args.Length > 0 && float.TryParse(args[0], out float time) && time is >= 0 and <= 24 ? time : _config.Time;
 
-                    if (permission.UserHasPermission(pl.UserIDString, PERM_AUTO))
+                    if (permission.UserHasPermission(pl.UserIDString, PermAuto))
                     {
-                        _playerTimes[pl.userID] = nvpd.time;
+                        _playerTimes[pl.userID] = nvpd.Time;
                         SaveData();
                     }
 
-                    SendChatMsg(pl, string.Format(lang.GetMessage(nvpd.timeLocked ? "TimeLocked" : "TimeUnlocked", this, pl.UserIDString), nvpd.time));
+                    SendChatMsg(pl, string.Format(lang.GetMessage(nvpd.TimeLocked ? "TimeLocked" : "TimeUnlocked", this, pl.UserIDString), nvpd.Time));
                     break;
                 case "unlimitednvg":
                 case "unvg":
-                    if (!permission.UserHasPermission(pl.UserIDString, PERM_UNLIMITEDNVG))
+                    if (!permission.UserHasPermission(pl.UserIDString, PermUnlimitedNvg))
                     {
                         SendChatMsg(pl, lang.GetMessage("NoPerms", this, pl.UserIDString));
                         return;
                     }
 
-                    List<Item> unvgInv = pl.inventory.containerWear.itemList.FindAll((Item x) => x.info.name == "hat.nvg.item");
+                    List<Item> unvgInv = pl.inventory.containerWear.itemList.FindAll(x => x.info.name == "hat.nvg.item");
                     if (unvgInv.Count > 0)
                     {
-                        foreach(Item i in unvgInv)
+                        foreach (Item i in unvgInv)
                         {
-                            if (i.condition == 1 && i.amount == 0)
+                            if (i.condition == 1f && i.amount == 0)
                             {
                                 i.SwitchOnOff(false);
                                 i.Remove();
@@ -210,7 +230,7 @@ namespace Oxide.Plugins
                     }
                     else
                     {
-                        var item = ItemManager.CreateByName("nightvisiongoggles", 1, 0UL);
+                        Item item = ItemManager.CreateByName("nightvisiongoggles");
                         if (item != null)
                         {
                             item.OnVirginSpawn();
@@ -229,15 +249,15 @@ namespace Oxide.Plugins
         private object CanWearItem(PlayerInventory inventory, Item item, int targetSlot)
         {
             if (item == null || inventory == null) return null;
-            if (item.info.name == "hat.nvg.item" && item.condition == 1 && item.amount == 0) return null;
+            if (item.info.name == "hat.nvg.item" && item.condition == 1f && item.amount == 0) return null;
 
             NextTick(() =>
             {
                 if (inventory != null && inventory.containerMain != null)
                 {
-                    foreach (Item i in inventory.containerMain.itemList.FindAll((Item x) => x.info.name == "hat.nvg.item"))
+                    foreach (Item i in inventory.containerMain.itemList.FindAll(x => x.info.name == "hat.nvg.item"))
                     {
-                        if (i != null && i.condition == 1 && i.amount == 0)
+                        if (i.condition == 1f && i.amount == 0)
                         {
                             i.SwitchOnOff(false);
                             i.Remove();
@@ -247,9 +267,9 @@ namespace Oxide.Plugins
                 }
                 if (inventory != null && inventory.containerBelt != null)
                 {
-                    foreach (Item i in inventory.containerBelt.itemList.FindAll((Item x) => x.info.name == "hat.nvg.item"))
+                    foreach (Item i in inventory.containerBelt.itemList.FindAll(x => x.info.name == "hat.nvg.item"))
                     {
-                        if (i != null && i.condition == 1 && i.amount == 0)
+                        if (i.condition == 1f && i.amount == 0)
                         {
                             i.SwitchOnOff(false);
                             i.Remove();
@@ -259,9 +279,9 @@ namespace Oxide.Plugins
                 }
                 if (inventory != null && inventory.containerWear != null)
                 {
-                    foreach (Item i in inventory.containerWear.itemList.FindAll((Item x) => x.info.name == "hat.nvg.item"))
+                    foreach (Item i in inventory.containerWear.itemList.FindAll(x => x.info.name == "hat.nvg.item"))
                     {
-                        if (i != null && i.condition == 1 && i.amount == 0)
+                        if (i.condition == 1f && i.amount == 0)
                         {
                             i.SwitchOnOff(false);
                             i.Remove();
@@ -275,16 +295,16 @@ namespace Oxide.Plugins
 
         private void OnItemDropped(Item item, BaseEntity entity)
         {
-            if (item != null && item.info.name == "hat.nvg.item" && item.condition == 1 && item.amount == 0)
+            if (item != null && item.info.name == "hat.nvg.item" && item.condition == 1f && item.amount == 0)
             {
                 item.Remove();
             }
         }
 
-        private NVPlayerData GetNVPlayerData(BasePlayer pl)
+        private NvPlayerData GetNvPlayerData(BasePlayer pl)
         {
-            _playerData[pl.userID] = _playerData.ContainsKey(pl.userID) ? _playerData[pl.userID] : new NVPlayerData();
-			_playerData[pl.userID].timeLocked = !(!_playerData[pl.userID].timeLocked || !permission.UserHasPermission(pl.UserIDString, PERM_ALLOWED));
+            _playerData[pl.userID] = _playerData.TryGetValue(pl.userID, out NvPlayerData value) ? value : new NvPlayerData();
+            _playerData[pl.userID].TimeLocked = !(!_playerData[pl.userID].TimeLocked || !permission.UserHasPermission(pl.UserIDString, PermAllowed));
             return _playerData[pl.userID];
         }
 
@@ -293,35 +313,35 @@ namespace Oxide.Plugins
         [HookMethod("LockPlayerTime")]
         void LockPlayerTime_PluginAPI(BasePlayer player, float time)
         {
-            var data = GetNVPlayerData(player);
-            data.timeLocked = true;
-            data.time = time;
+            NvPlayerData data = GetNvPlayerData(player);
+            data.TimeLocked = true;
+            data.Time = time;
         }
 
         [HookMethod("UnlockPlayerTime")]
         void UnlockPlayerTime_PluginAPI(BasePlayer player)
         {
-            var data = GetNVPlayerData(player);
-            data.timeLocked = false;
+            NvPlayerData data = GetNvPlayerData(player);
+            data.TimeLocked = false;
         }
 
         [HookMethod("IsPlayerTimeLocked")]
         bool IsPlayerTimeLocked_PluginAPI(BasePlayer player)
         {
-            var data = GetNVPlayerData(player);
-            return data.timeLocked;
+            NvPlayerData data = GetNvPlayerData(player);
+            return data.TimeLocked;
         }
 
         [HookMethod("BlockEnvUpdates")]
         void BlockEnvUpdates_PluginAPI(bool blockEnv)
         {
-            API_blockEnvUpdates = blockEnv;
+            _apiBlockEnvUpdates = blockEnv;
         }
 
         #endregion
 
         #region Config
-        private DateTime _defaultDate = new DateTime(2024, 1, 25);
+        private readonly DateTime _defaultDate = new(2024, 1, 25);
 
         protected override void LoadDefaultMessages()
         {
@@ -346,9 +366,11 @@ namespace Oxide.Plugins
 
         private PluginConfig GetDefaultConfig()
         {
-            PluginConfig config = new PluginConfig();
-            config.date = _defaultDate.ToString("M/d/yyyy");
-            config.time = 12;
+            PluginConfig config = new()
+            {
+                Date = _defaultDate.ToString("M/d/yyyy"),
+                Time = 12
+            };
             return config;
         }
 
@@ -357,16 +379,16 @@ namespace Oxide.Plugins
             base.LoadConfig();
             _config = Config.ReadObject<PluginConfig>();
 
-            if (_config.time < 0 || _config.time > 24)
-                _config.time = 12;
+            if (_config.Time < 0 || _config.Time > 24)
+                _config.Time = 12;
 
-            if (!DateTime.TryParse(_config.date, out _nvDate))
+            if (!DateTime.TryParse(_config.Date, out _nvDate))
             {
                 _nvDate = _defaultDate;
-                _config.date = _defaultDate.ToString("M/d/yyyy");
+                _config.Date = _defaultDate.ToString("M/d/yyyy");
 
-                if (_config.time == 0)
-                    _config.time = 12;
+                if (_config.Time == 0)
+                    _config.Time = 12;
             }
 
             Config.WriteObject(_config, true);
@@ -374,17 +396,17 @@ namespace Oxide.Plugins
 
         private class PluginConfig
         {
-            public string chatIconID = "0";
-            public string date;
-            public float time;
+            public string ChatIconID = "0";
+            public string Date;
+            public float Time;
 
         }
         #endregion
 
-        private class NVPlayerData
+        private class NvPlayerData
         {
-            public bool timeLocked = false;
-            public float time = 12f;
+            public bool TimeLocked;
+            public float Time = 12f;
         }
     }
 }
