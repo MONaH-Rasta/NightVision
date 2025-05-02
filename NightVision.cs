@@ -92,7 +92,7 @@ namespace Oxide.Plugins
                                 LogError(this + ": ToStream - no baseNetworkable!?");
                             }
 
-                            using BufferStream bufferStream = new BufferStream();
+                            using BufferStream bufferStream = new();
                             bufferStream.Initialize();
                             try
                             {
@@ -106,10 +106,7 @@ namespace Oxide.Plugins
                                     continue;
                                 }
 
-                                byte[] buffer = new byte[segment.Count];
-                                Array.Copy(segment.Array, segment.Offset, buffer, 0, segment.Count);
-
-                                write.Write(buffer, 0, buffer.Length);
+                                write.Write(segment.Array, segment.Offset, segment.Count);
                                 write.Send(new SendInfo(connection));
                             }
                             catch (Exception ex)
