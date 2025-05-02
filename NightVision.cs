@@ -9,7 +9,7 @@ using Oxide.Core;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Clearshot", "2.1.0")]
+    [Info("NightVision", "Clearshot", "2.2.0")]
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
@@ -17,6 +17,7 @@ namespace Oxide.Plugins
         private Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
         private EnvSync _envSync;
         private Dictionary<ulong, NVPlayerData> _playerData = new Dictionary<ulong, NVPlayerData>();
+        private DateTime _sunnyDayDate = new DateTime(2024, 1, 25);
 
         public bool API_envUpdates = true;
 
@@ -65,7 +66,7 @@ namespace Oxide.Plugins
                                     _envSync.Save(saveInfo);
                                     if (nvPlayerData.timeLocked)
                                     {
-                                        saveInfo.msg.environment.dateTime = new DateTime().AddHours(nvPlayerData.time).ToBinary();
+                                        saveInfo.msg.environment.dateTime = _sunnyDayDate.AddHours(nvPlayerData.time).ToBinary();
                                         saveInfo.msg.environment.fog = nvPlayerData.fog;
                                         saveInfo.msg.environment.rain = nvPlayerData.rain;
                                         saveInfo.msg.environment.clouds = 0;
