@@ -3,6 +3,7 @@ using Facepunch;
 using Network;
 using Newtonsoft.Json;
 using Oxide.Core;
+using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using ProtoBuf;
 using System;
@@ -14,8 +15,13 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Jake_Rich", "1.0.3")]
+    [Info("NightVision", "Jake_Rich", "1.3.1")]
     [Description("See at night")]
+
+    //1.1.0: Made more performance friendly
+    //1.2.0: Removed CanNetworkTo (performance)
+    //1.3.0: Added Plugin API
+    //1.3.1: ArrayPool.Free
 
     public class NightVision : RustPlugin
     {
@@ -25,10 +31,97 @@ namespace Oxide.Plugins
 
         public UILabel label { get; set; }
 
+        public static MethodInfo SendAsSnapshotMethod;
+
         private void TimerLoop()
         {
             label.HideAll();
-            label.Show(BasePlayer.activePlayerList.Where(x => x.IsAdmin).Where(x => GetPlayerData(x).NightVisionActive));
+
+            foreach (var player in BasePlayer.activePlayerList)
+            {
+                UpdateEnvironmentSync(player);
+            }
+        }
+
+        private void UpdateEnvironmentSync(BasePlayer player)
+        {
+            var data = GetPlayerData(player);
+            if (data.LockTime)
+            {
+                if (data.ShowUI)
+                {
+                    label.Refresh(player);
+                }
+                #region Send Overridden EnvSync
+                if (Net.sv.write.Start())
+                {
+                    Connection connection = player.net.connection;
+                    connection.validate.entityUpdates = connection.validate.entityUpdates + 1;
+                    BaseNetworkable.SaveInfo saveInfo = new global::BaseNetworkable.SaveInfo
+                    {
+                        forConnection = player.net.connection,
+                        forDisk = false
+                    };
+                    Net.sv.write.PacketID(Message.Type.Entities);
+                    Net.sv.write.UInt32(player.net.connection.validate.entityUpdates);
+                    using (saveInfo.msg = Pool.Get<Entity>())
+                    {
+                        EnvSync.Save(saveInfo);
+                        if (saveInfo.msg.baseEntity == null)
+                        {
+                            Debug.LogError(this + ": ToStream - no BaseEntity!?");
+                        }
+                        saveInfo.msg.environment.dateTime = new DateTime().AddHours(data.Time).ToBinary();
+                        saveInfo.msg.environment.fog = data.Fog == -1 ? 0 : data.Fog;
+                        saveInfo.msg.environment.rain = data.Rain == -1 ? 0 : data.Rain;
+                        saveInfo.msg.environment.clouds = 0;
+                        if (saveInfo.msg.baseNetworkable == null)
+                        {
+                            Debug.LogError(this + ": ToStream - no baseNetworkable!?");
+                        }
+                        saveInfo.msg.ToProto(Net.sv.write);
+                        EnvSync.PostSave(saveInfo);
+                        Net.sv.write.Send(new SendInfo(player.net.connection));
+                    }
+                }
+                #endregion
+            }
+            else
+            {
+                //Send the EnvSync to the client directly (limitNetworking enabled)
+                if (SendAsSnapshotMethod == null)
+                {
+                    SendAsSnapshotMethod = typeof(BaseNetworkable).GetMethod("SendAsSnapshot", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                var args = ArrayPool.Get(2);
+                args[0] = player.Connection;
+                args[1] = false;
+                SendAsSnapshotMethod.Invoke(EnvSync, args);
+                ArrayPool.Free(args);
+            }
+        }
+
+        private void SetupUI()
+        {
+            label = new UILabel(new Vector2(0.01f, 0.90f), new Vector2(0.08f, 0.99f), "", 16, "1 1 1 1", null, TextAnchor.UpperLeft);
+            label.conditionalShow = delegate (BasePlayer player)
+            {
+                return player.IsAdmin;
+            };
+            label.variableText = delegate (BasePlayer player)
+            {
+                bool daytime = TOD_Sky.Instance.Cycle.Hour < 20 && TOD_Sky.Instance.Cycle.Hour > 6;
+                float minute = (int)((TOD_Sky.Instance.Cycle.Hour - Math.Truncate(TOD_Sky.Instance.Cycle.Hour)) * 60);
+                int hour = TOD_Sky.Instance.Cycle.Hour < 13 ? (int)TOD_Sky.Instance.Cycle.Hour : (int)TOD_Sky.Instance.Cycle.Hour - 12;
+                if (hour == 0)
+                {
+                    hour = 12;
+                }
+                return
+                $"{(daytime ? "Day" : "Night")}\n" +
+                $"{hour}:{minute.ToString("00")}{(TOD_Sky.Instance.Cycle.Hour < 12 ? "am" : "pm")}"; //I hate this bracketed statment, but I won't change it so it should be fine
+            };
+            label.AddOutline();
         }
 
         #region PlayerData
@@ -36,7 +129,11 @@ namespace Oxide.Plugins
         public class PlayerData
         {
             private BasePlayer _player { get; set; }
-            public bool NightVisionActive { get; set; }
+            public bool LockTime;
+            public bool ShowUI;
+            public float Time;
+            public float Rain;
+            public float Fog;
 
             public PlayerData(BasePlayer player)
             {
@@ -67,6 +164,7 @@ namespace Oxide.Plugins
         #region Hooks
 
         public static NightVision _plugin { get; set; }
+        public static EnvSync EnvSync;
 
         void Init()
         {
@@ -77,80 +175,64 @@ namespace Oxide.Plugins
 
         void OnServerInitialized()
         {
-            label = new UILabel(new Vector2(0.01f, 0.90f), new Vector2(0.08f, 0.99f), "", 16, "1 1 1 1", null, TextAnchor.UpperLeft);
-            label.conditionalShow = delegate (BasePlayer player)
-            {
-                return player.IsAdmin;
-            };
-            label.variableText = delegate (BasePlayer player)
-            {
-                bool daytime = TOD_Sky.Instance.Cycle.Hour < 20 && TOD_Sky.Instance.Cycle.Hour > 6;
-                float minute = (int)((TOD_Sky.Instance.Cycle.Hour - Math.Truncate(TOD_Sky.Instance.Cycle.Hour)) * 60);
-                int hour = TOD_Sky.Instance.Cycle.Hour < 13 ? (int)TOD_Sky.Instance.Cycle.Hour : (int)TOD_Sky.Instance.Cycle.Hour - 12;
-                if (hour == 0)
-                {
-                    hour = 12;
-                }
-                return
-                $"{(daytime ? "Day" : "Night")}\n" +
-                $"{hour}:{minute.ToString("00")}{(TOD_Sky.Instance.Cycle.Hour < 12 ? "am" : "pm")}"; //I hate this bracketed statment, but I won't change it so it should be fine
-            };
-            label.AddOutline();
-            _timer = timer.Every(10f, TimerLoop);
+            SetupUI();
+            EnvSync = BaseNetworkable.serverEntities.OfType<EnvSync>().FirstOrDefault();
+            EnvSync.limitNetworking = true;
+            _timer = timer.Every(5f, TimerLoop);
         }
 
         void Unload()
         {
             label.HideAll();
+            EnvSync.limitNetworking = false;
+            _timer?.Destroy();
         }
 
-        object CanNetworkTo(BaseNetworkable entity, BasePlayer player)
+        #endregion
+
+        #region NightVision Plugin API 1.3.0
+
+        [PluginReference("NightVision")]
+        RustPlugin NightVisionRef;
+
+        public void LockPlayerTime(BasePlayer player, float time, float fog = -1, float rain = -1)
         {
-            if (!(entity is EnvSync))
-            {
-                return null;
-            }
-            if (!GetPlayerData(player).NightVisionActive)
-            {
-                return null;
-            }
-            if (!permission.UserHasPermission(player.UserIDString, permissionName))
-            {
-                return null;
-            }
-            var env = entity as EnvSync;
-            if (Net.sv.write.Start())
-            {
-                Connection connection = player.net.connection;
-                connection.validate.entityUpdates = connection.validate.entityUpdates + 1;
-                BaseNetworkable.SaveInfo saveInfo = new global::BaseNetworkable.SaveInfo
-                {
-                    forConnection = player.net.connection,
-                    forDisk = false
-                };
-                Net.sv.write.PacketID(Message.Type.Entities);
-                Net.sv.write.UInt32(player.net.connection.validate.entityUpdates);
-                using (saveInfo.msg = Pool.Get<Entity>())
-                {
-                    env.Save(saveInfo);
-                    if (saveInfo.msg.baseEntity == null)
-                    {
-                        Debug.LogError(this + ": ToStream - no BaseEntity!?");
-                    }
-                    saveInfo.msg.environment.dateTime = new DateTime().AddHours(12).ToBinary();
-                    saveInfo.msg.environment.fog = 0;
-                    saveInfo.msg.environment.rain = 0;
-                    saveInfo.msg.environment.clouds = 0;
-                    if (saveInfo.msg.baseNetworkable == null)
-                    {
-                        Debug.LogError(this + ": ToStream - no baseNetworkable!?");
-                    }
-                    saveInfo.msg.ToProto(Net.sv.write);
-                    env.PostSave(saveInfo);
-                    Net.sv.write.Send(new SendInfo(player.net.connection));
-                }
-            }
-            return false;
+            var args = Core.ArrayPool.Get(4);
+            args[0] = player;
+            args[1] = time;
+            args[2] = fog;
+            args[3] = rain;
+            NightVisionRef?.CallHook("LockPlayerTime", args);
+            Core.ArrayPool.Free(args);
+        }
+
+        public void UnlockPlayerTime(BasePlayer player)
+        {
+            var args = Core.ArrayPool.Get(1);
+            args[0] = player;
+            NightVisionRef?.CallHook("UnlockPlayerTime", args);
+            Core.ArrayPool.Free(args);
+        }
+
+        #endregion
+
+        #region Plugin-API
+
+        [HookMethod("LockPlayerTime")]
+        void LockPlayerTime_PluginAPI(BasePlayer player, float time, float fog, float rain)
+        {
+            var data = GetPlayerData(player);
+            data.LockTime = true;
+            data.Time = time;
+            data.Fog = fog;
+            data.Rain = rain;
+        }
+
+        [HookMethod("UnlockPlayerTime")]
+        void UnlockPlayerTime_PluginAPI(BasePlayer player)
+        {
+            var data = GetPlayerData(player);
+            data.LockTime = false;
         }
 
         #endregion
@@ -165,17 +247,20 @@ namespace Oxide.Plugins
                 PrintToChat(player, string.Format(lang.GetMessage("AdminsOnly", _plugin, player.UserIDString), permissionName));
                 return;
             }
-            GetPlayerData(player).NightVisionActive = !GetPlayerData(player).NightVisionActive;
+            var data = GetPlayerData(player);
+            data.LockTime = !data.LockTime;
 
-            if (GetPlayerData(player).NightVisionActive)
+            if (data.LockTime)
             {
                 PrintToChat(player, lang.GetMessage("Activated", _plugin, player.UserIDString));
-                label.Show(player);
+                data.Time = 12;
+                UpdateEnvironmentSync(player);
             }
             else
             {
                 PrintToChat(player, lang.GetMessage("Deactivated", _plugin, player.UserIDString));
                 label.Hide(player);
+                UpdateEnvironmentSync(player);
             }
         }
 
@@ -1757,3 +1842,5 @@ namespace Oxide.Plugins
         #endregion
     }
 }
+
+
