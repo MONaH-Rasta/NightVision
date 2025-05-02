@@ -9,7 +9,7 @@ using Oxide.Core;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Clearshot", "2.3.0")]
+    [Info("NightVision", "Clearshot", "2.3.1")]
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
@@ -316,7 +316,7 @@ namespace Oxide.Plugins
                 ["TimeLocked"] = "Time locked to day",
                 ["TimeUnlocked"] = "Time unlocked",
                 ["HelpTitle"] = "<size=16><color=#00ff00>Night Vision</color> Help</size>\n",
-                ["Help1"] = "<color=#00ff00>/nightvision (/nv) <time: 0-24></color> - Toggle time lock night vision",
+                ["Help1"] = "<color=#00ff00>/nightvision <0-24>(/nv)</color> - Toggle time lock night vision with optional time 0-24",
                 ["Help2"] = "<color=#00ff00>/unlimitednvg (/unvg)</color> - Equip/remove unlimited night vision goggles",
                 ["EquipUNVG"] = "Equipped unlimited night vision goggles",
                 ["RemoveUNVG"] = "Removed unlimited night vision goggles"
@@ -331,7 +331,7 @@ namespace Oxide.Plugins
         private PluginConfig GetDefaultConfig()
         {
             PluginConfig config = new PluginConfig();
-            config.date = _defaultDate.ToString("MM/dd/yyyy");
+            config.date = _defaultDate.ToString("M/d/yyyy");
             config.time = 12;
             return config;
         }
@@ -342,10 +342,16 @@ namespace Oxide.Plugins
             _config = Config.ReadObject<PluginConfig>();
 
             if (_config.time < 0 || _config.time > 24)
-                _config.time = 12f;
+                _config.time = 12;
 
             if (!DateTime.TryParse(_config.date, out _nvDate))
+            {
                 _nvDate = _defaultDate;
+                _config.date = _defaultDate.ToString("M/d/yyyy");
+
+                if (_config.time == 0)
+                    _config.time = 12;
+            }
 
             Config.WriteObject(_config, true);
         }
