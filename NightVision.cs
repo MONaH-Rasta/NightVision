@@ -9,7 +9,7 @@ using Oxide.Core;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Clearshot", "2.2.0")]
+    [Info("NightVision", "Clearshot", "2.3.0")]
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
@@ -17,17 +17,23 @@ namespace Oxide.Plugins
         private Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
         private EnvSync _envSync;
         private Dictionary<ulong, NVPlayerData> _playerData = new Dictionary<ulong, NVPlayerData>();
-        private DateTime _sunnyDayDate = new DateTime(2024, 1, 25);
+        private DateTime _nvDate;
+        private List<ulong> _connected = new List<ulong>();
 
-        public bool API_envUpdates = true;
+        private string PERM_ALLOWED = "nightvision.allowed";
+        private string PERM_UNLIMITEDNVG = "nightvision.unlimitednvg";
+        private string PERM_AUTO = "nightvision.auto";
+
+        private bool API_blockEnvUpdates = false;
 
         private void SendChatMsg(BasePlayer pl, string msg, string prefix = null) =>
             _rustPlayer.Message(pl, msg, prefix != null ? prefix : lang.GetMessage("ChatPrefix", this, pl.UserIDString), Convert.ToUInt64(_config.chatIconID), Array.Empty<object>());
 
         private void Init()
         {
-            permission.RegisterPermission("nightvision.allowed", this);
-            permission.RegisterPermission("nightvision.unlimitednvg", this);
+            permission.RegisterPermission(PERM_ALLOWED, this);
+            permission.RegisterPermission(PERM_UNLIMITEDNVG, this);
+            permission.RegisterPermission(PERM_AUTO, this);
         }
 
         private void OnServerInitialized()
@@ -49,7 +55,7 @@ namespace Oxide.Plugins
                         if (!(basePlayer == null)) {
                             NVPlayerData nvPlayerData = GetNVPlayerData(basePlayer);
 
-                            if (!API_envUpdates && !nvPlayerData.timeLocked) continue;
+                            if (API_blockEnvUpdates && !nvPlayerData.timeLocked) continue;
 
                             if (Net.sv.write.Start())
                             {
@@ -66,10 +72,11 @@ namespace Oxide.Plugins
                                     _envSync.Save(saveInfo);
                                     if (nvPlayerData.timeLocked)
                                     {
-                                        saveInfo.msg.environment.dateTime = _sunnyDayDate.AddHours(nvPlayerData.time).ToBinary();
-                                        saveInfo.msg.environment.fog = nvPlayerData.fog;
-                                        saveInfo.msg.environment.rain = nvPlayerData.rain;
+                                        saveInfo.msg.environment.dateTime = _nvDate.AddHours(nvPlayerData.time).ToBinary();
+                                        saveInfo.msg.environment.fog = 0;
+                                        saveInfo.msg.environment.rain = 0;
                                         saveInfo.msg.environment.clouds = 0;
+										saveInfo.msg.environment.wind = 0;
                                     }
                                     if (saveInfo.msg.baseEntity == null)
                                     {
@@ -90,10 +97,33 @@ namespace Oxide.Plugins
             });
         }
 
+        private void OnPlayerConnected(BasePlayer player)
+        {
+            if (player != null && !_connected.Contains(player.userID))
+                _connected.Add(player.userID);
+        }
+
         private void OnPlayerDisconnected(BasePlayer pl, string reason)
         {
             if (pl != null && _playerData.ContainsKey(pl.userID))
                 _playerData.Remove(pl.userID);
+
+            if (pl != null && _connected.Contains(pl.userID))
+                _connected.Remove(pl.userID);
+        }
+
+        private void OnPlayerSleepEnded(BasePlayer pl)
+        {
+            if (pl == null)
+                return;
+
+            if (!_connected.Contains(pl.userID))
+                return;
+
+            if (permission.UserHasPermission(pl.UserIDString, PERM_AUTO))
+                NightVisionCommand(pl.IPlayer, "nv", new string[] { });
+
+            _connected.Remove(pl.userID);
         }
 
         private void Unload()
@@ -115,30 +145,33 @@ namespace Oxide.Plugins
                 sb.AppendLine(lang.GetMessage("HelpTitle", this, pl.UserIDString));
                 sb.AppendLine(lang.GetMessage("Help1", this, pl.UserIDString));
 
-                if (permission.UserHasPermission(pl.UserIDString, "nightvision.unlimitednvg"))
+                if (permission.UserHasPermission(pl.UserIDString, PERM_UNLIMITEDNVG))
                     sb.AppendLine(lang.GetMessage("Help2", this, pl.UserIDString));
 
                 SendChatMsg(pl, sb.ToString(), "");
                 return;
             }
 
+            NVPlayerData nvpd;
             switch(command)
             {
                 case "nightvision":
                 case "nv":
-                    if (!permission.UserHasPermission(pl.UserIDString, "nightvision.allowed"))
+                    if (!permission.UserHasPermission(pl.UserIDString, PERM_ALLOWED))
                     {
                         SendChatMsg(pl, lang.GetMessage("NoPerms", this, pl.UserIDString));
                         return;
                     }
 
-                    NVPlayerData nvpd = GetNVPlayerData(pl);
+                    nvpd = GetNVPlayerData(pl);
                     nvpd.timeLocked = !nvpd.timeLocked;
+                    float time;
+                    nvpd.time = args.Length > 0 && float.TryParse(args[0], out time) && time >= 0 && time <= 24 ? time : _config.time;
                     SendChatMsg(pl, lang.GetMessage(nvpd.timeLocked ? "TimeLocked" : "TimeUnlocked", this, pl.UserIDString));
                     break;
                 case "unlimitednvg":
                 case "unvg":
-                    if (!permission.UserHasPermission(pl.UserIDString, "nightvision.unlimitednvg"))
+                    if (!permission.UserHasPermission(pl.UserIDString, PERM_UNLIMITEDNVG))
                     {
                         SendChatMsg(pl, lang.GetMessage("NoPerms", this, pl.UserIDString));
                         return;
@@ -235,23 +268,18 @@ namespace Oxide.Plugins
         private NVPlayerData GetNVPlayerData(BasePlayer pl)
         {
             _playerData[pl.userID] = _playerData.ContainsKey(pl.userID) ? _playerData[pl.userID] : new NVPlayerData();
-            if (_playerData[pl.userID].timeLocked && !permission.UserHasPermission(pl.UserIDString, "nightvision.allowed"))
-            {
-                _playerData[pl.userID].timeLocked = false;
-            }
+			_playerData[pl.userID].timeLocked = !(!_playerData[pl.userID].timeLocked || !permission.UserHasPermission(pl.UserIDString, PERM_ALLOWED));
             return _playerData[pl.userID];
         }
 
         #region Plugin-API
 
         [HookMethod("LockPlayerTime")]
-        void LockPlayerTime_PluginAPI(BasePlayer player, float time, float fog, float rain)
+        void LockPlayerTime_PluginAPI(BasePlayer player, float time)
         {
             var data = GetNVPlayerData(player);
             data.timeLocked = true;
             data.time = time;
-            data.fog = fog;
-            data.rain = rain;
         }
 
         [HookMethod("UnlockPlayerTime")]
@@ -269,14 +297,16 @@ namespace Oxide.Plugins
         }
 
         [HookMethod("BlockEnvUpdates")]
-        void BlockEnvUpdates_PluginAPI(bool envUpdates)
+        void BlockEnvUpdates_PluginAPI(bool blockEnv)
         {
-            API_envUpdates = !envUpdates;
+            API_blockEnvUpdates = blockEnv;
         }
 
         #endregion
 
         #region Config
+        private DateTime _defaultDate = new DateTime(2024, 1, 25);
+
         protected override void LoadDefaultMessages()
         {
             lang.RegisterMessages(new Dictionary<string, string>
@@ -286,7 +316,7 @@ namespace Oxide.Plugins
                 ["TimeLocked"] = "Time locked to day",
                 ["TimeUnlocked"] = "Time unlocked",
                 ["HelpTitle"] = "<size=16><color=#00ff00>Night Vision</color> Help</size>\n",
-                ["Help1"] = "<color=#00ff00>/nightvision (/nv)</color> - Toggle time lock night vision",
+                ["Help1"] = "<color=#00ff00>/nightvision (/nv) <time: 0-24></color> - Toggle time lock night vision",
                 ["Help2"] = "<color=#00ff00>/unlimitednvg (/unvg)</color> - Equip/remove unlimited night vision goggles",
                 ["EquipUNVG"] = "Equipped unlimited night vision goggles",
                 ["RemoveUNVG"] = "Removed unlimited night vision goggles"
@@ -300,28 +330,39 @@ namespace Oxide.Plugins
 
         private PluginConfig GetDefaultConfig()
         {
-            return new PluginConfig();
+            PluginConfig config = new PluginConfig();
+            config.date = _defaultDate.ToString("MM/dd/yyyy");
+            config.time = 12;
+            return config;
         }
 
         protected override void LoadConfig()
         {
             base.LoadConfig();
             _config = Config.ReadObject<PluginConfig>();
+
+            if (_config.time < 0 || _config.time > 24)
+                _config.time = 12f;
+
+            if (!DateTime.TryParse(_config.date, out _nvDate))
+                _nvDate = _defaultDate;
+
             Config.WriteObject(_config, true);
         }
 
         private class PluginConfig
         {
             public string chatIconID = "0";
+            public string date;
+            public float time;
+
         }
         #endregion
 
         private class NVPlayerData
         {
             public bool timeLocked = false;
-            public float time = 12;
-            public float rain = 0;
-            public float fog = 0;
+            public float time = 12f;
         }
     }
 }
