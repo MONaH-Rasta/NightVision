@@ -9,7 +9,7 @@ using Oxide.Core;
 
 namespace Oxide.Plugins
 {
-    [Info("NightVision", "Clearshot", "2.3.1")]
+    [Info("NightVision", "Clearshot", "2.4.0")]
     [Description("Allows players to see at night")]
     class NightVision : CovalencePlugin
     {
@@ -17,6 +17,7 @@ namespace Oxide.Plugins
         private Game.Rust.Libraries.Player _rustPlayer = Interface.Oxide.GetLibrary<Game.Rust.Libraries.Player>("Player");
         private EnvSync _envSync;
         private Dictionary<ulong, NVPlayerData> _playerData = new Dictionary<ulong, NVPlayerData>();
+        private Dictionary<ulong, float> _playerTimes = new Dictionary<ulong, float>();
         private DateTime _nvDate;
         private List<ulong> _connected = new List<ulong>();
 
@@ -34,6 +35,8 @@ namespace Oxide.Plugins
             permission.RegisterPermission(PERM_ALLOWED, this);
             permission.RegisterPermission(PERM_UNLIMITEDNVG, this);
             permission.RegisterPermission(PERM_AUTO, this);
+
+            _playerTimes = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong, float>>($"{Name}\\playerTimes");
         }
 
         private void OnServerInitialized()
@@ -121,7 +124,7 @@ namespace Oxide.Plugins
                 return;
 
             if (permission.UserHasPermission(pl.UserIDString, PERM_AUTO))
-                NightVisionCommand(pl.IPlayer, "nv", new string[] { });
+                NightVisionCommand(pl.IPlayer, "nv", new string[] { _playerTimes.ContainsKey(pl.userID) ? _playerTimes[pl.userID].ToString() : "" });
 
             _connected.Remove(pl.userID);
         }
@@ -130,6 +133,11 @@ namespace Oxide.Plugins
         {
             if (_envSync != null)
                 _envSync.limitNetworking = false;
+        }
+
+        private void SaveData()
+        {
+            Interface.Oxide.DataFileSystem.WriteObject($"{Name}\\playerTimes", _playerTimes);
         }
 
         [Command("nightvision", "nv", "unlimitednvg", "unvg")]
@@ -167,7 +175,14 @@ namespace Oxide.Plugins
                     nvpd.timeLocked = !nvpd.timeLocked;
                     float time;
                     nvpd.time = args.Length > 0 && float.TryParse(args[0], out time) && time >= 0 && time <= 24 ? time : _config.time;
-                    SendChatMsg(pl, lang.GetMessage(nvpd.timeLocked ? "TimeLocked" : "TimeUnlocked", this, pl.UserIDString));
+
+                    if (permission.UserHasPermission(pl.UserIDString, PERM_AUTO))
+                    {
+                        _playerTimes[pl.userID] = nvpd.time;
+                        SaveData();
+                    }
+
+                    SendChatMsg(pl, string.Format(lang.GetMessage(nvpd.timeLocked ? "TimeLocked" : "TimeUnlocked", this, pl.UserIDString), nvpd.time));
                     break;
                 case "unlimitednvg":
                 case "unvg":
@@ -313,7 +328,7 @@ namespace Oxide.Plugins
             {
                 ["ChatPrefix"] = "<color=#00ff00>[Night Vision]</color>",
                 ["NoPerms"] = "You do not have permission to use this command!",
-                ["TimeLocked"] = "Time locked to day",
+                ["TimeLocked"] = "Time locked to {0}",
                 ["TimeUnlocked"] = "Time unlocked",
                 ["HelpTitle"] = "<size=16><color=#00ff00>Night Vision</color> Help</size>\n",
                 ["Help1"] = "<color=#00ff00>/nightvision <0-24>(/nv)</color> - Toggle time lock night vision with optional time 0-24",
